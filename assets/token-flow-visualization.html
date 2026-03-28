@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Glow Protocol – Token Flow Visualization</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #0d1117;
+    color: #c9d1d9;
+    overflow: hidden;
+  }
+
+  /* ── Header ── */
+  #header {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 20;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 24px;
+    background: rgba(13,17,23,.92);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid #21262d;
+  }
+  #header h1 { font-size: 18px; font-weight: 600; }
+  #header h1 span { color: #58a6ff; }
+
+  /* ── Legend ── */
+  #legend {
+    display: flex; gap: 18px; font-size: 12px; align-items: center;
+  }
+  .legend-item { display: flex; align-items: center; gap: 5px; }
+  .legend-swatch {
+    width: 14px; height: 14px; border-radius: 3px;
+  }
+
+  /* ── Filter bar ── */
+  #filters {
+    position: fixed; top: 52px; left: 0; right: 0; z-index: 19;
+    display: flex; gap: 8px; padding: 8px 24px;
+    background: rgba(13,17,23,.88);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid #21262d;
+  }
+  .filter-btn {
+    padding: 4px 14px; border-radius: 14px; font-size: 12px;
+    border: 1px solid #30363d; background: transparent; color: #8b949e;
+    cursor: pointer; transition: all .2s;
+  }
+  .filter-btn:hover { border-color: #58a6ff; color: #58a6ff; }
+  .filter-btn.active { background: #1f6feb33; border-color: #58a6ff; color: #58a6ff; }
+
+  /* ── Canvas ── */
+  svg { position: fixed; top: 0; left: 0; width: 100%; height: 100%; }
+
+  /* ── Tooltip ── */
+  #tooltip {
+    position: fixed; z-index: 30; pointer-events: none;
+    background: #161b22; border: 1px solid #30363d;
+    border-radius: 8px; padding: 12px 16px;
+    max-width: 320px; font-size: 13px; line-height: 1.5;
+    box-shadow: 0 8px 24px rgba(0,0,0,.4);
+    opacity: 0; transition: opacity .15s;
+  }
+  #tooltip.visible { opacity: 1; }
+  #tooltip h3 { font-size: 14px; margin-bottom: 4px; }
+  #tooltip .tt-token { font-size: 11px; padding: 1px 6px; border-radius: 4px; font-weight: 600; }
+
+  /* ── Info panel ── */
+  #info {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    z-index: 20; text-align: center; font-size: 12px; color: #484f58;
+  }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>Glow Protocol <span>Token Flow</span></h1>
+  <div id="legend">
+    <div class="legend-item"><div class="legend-swatch" style="background:#f0883e"></div> GLOW</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#3fb950"></div> GCC</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#58a6ff"></div> USDC / USDG</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#bc8cff"></div> Nominations</div>
+  </div>
+</div>
+
+<div id="filters">
+  <div class="filter-btn active" data-filter="all">All Flows</div>
+  <div class="filter-btn" data-filter="glow">GLOW</div>
+  <div class="filter-btn" data-filter="gcc">GCC</div>
+  <div class="filter-btn" data-filter="usdc">USDC / USDG</div>
+  <div class="filter-btn" data-filter="nominations">Nominations</div>
+</div>
+
+<svg id="canvas"></svg>
+
+<div id="tooltip"></div>
+<div id="info">Drag to pan · Scroll to zoom · Hover nodes &amp; edges for details · Use filters above</div>
+
+<script>
+// ─── Data ───────────────────────────────────────────────────────────────────
+
+const COLORS = {
+  glow: '#f0883e',
+  gcc: '#3fb950',
+  usdc: '#58a6ff',
+  nominations: '#bc8cff',
+};
+
+const nodes = [
+  // Tokens
+  { id: 'glow_mint',     label: 'GLOW\nInflation',        x: 120,  y: 260, w: 120, h: 52, cat: 'token', color: COLORS.glow,
+    info: 'Mints 230,000 GLOW per week distributed to 4 entities.' },
+  { id: 'gcc_token',     label: 'GCC\nToken',             x: 780,  y: 120, w: 110, h: 52, cat: 'token', color: COLORS.gcc,
+    info: 'Carbon Credit token — 1 GCC = 1 metric ton CO₂ offset. Minted by MinerPool based on GCA reports.' },
+  { id: 'usdg_token',    label: 'USDG\nWrapper',          x: 120,  y: 540, w: 110, h: 52, cat: 'token', color: COLORS.usdc,
+    info: 'Guarded USDC wrapper (1:1). Allowlisted transfers only during guarded launch.' },
+
+  // Core contracts
+  { id: 'early_liq',     label: 'Early\nLiquidity',       x: 120,  y: 120, w: 120, h: 52, cat: 'contract', color: '#21262d',
+    info: 'Bonding curve sale: price = $0.003 × 2^(sold/1M). 12M GLOW available. USDC proceeds go to Miner Pool.' },
+  { id: 'miner_pool',    label: 'Miner Pool\n& GCA',      x: 440,  y: 260, w: 140, h: 58, cat: 'contract', color: '#21262d',
+    info: 'Central reward hub. Receives 175k GLOW/week + USDC donations. Distributes rewards to solar farms via weekly buckets.' },
+  { id: 'gcc_auction',   label: 'GCC Auction\n(Descending)', x: 780, y: 260, w: 150, h: 52, cat: 'contract', color: '#21262d',
+    info: 'Reverse Dutch auction for GCC. Starting price 0.1 GLOW/GCC, decays with 1-week half-life. GLOW paid is burned.' },
+  { id: 'impact',        label: 'Impact\nCatalyst',       x: 780,  y: 400, w: 130, h: 52, cat: 'contract', color: '#21262d',
+    info: 'Swaps GCC↔USDC via Uniswap V2 and adds liquidity. Produces Nominations = √(gcc × usdc).' },
+  { id: 'governance',    label: 'Governance',             x: 440,  y: 480, w: 130, h: 48, cat: 'contract', color: '#21262d',
+    info: '5 proposal types. Costs 1.1^n nominations (n = active proposals). 16-week cycle, 60% threshold.' },
+  { id: 'veto',          label: 'Veto\nCouncil',          x: 260,  y: 400, w: 120, h: 52, cat: 'contract', color: '#21262d',
+    info: 'Up to 7 members. 5k GLOW/week (vested 100 weeks). Can delay bucket finalization by 13 weeks.' },
+  { id: 'grants',        label: 'Grants\nTreasury',       x: 120,  y: 400, w: 120, h: 52, cat: 'contract', color: '#21262d',
+    info: 'Receives 40k GLOW/week. Governance allocates grants, recipients claim individually.' },
+  { id: 'safety',        label: 'Safety\nDelay',          x: 620,  y: 400, w: 120, h: 52, cat: 'contract', color: '#21262d',
+    info: 'Holds farm USDC rewards for 7-day lockup. Veto Council can extend by 90 days.' },
+  { id: 'univ2',         label: 'Uniswap V2\nGCC/USDC',   x: 960,  y: 400, w: 140, h: 52, cat: 'contract', color: '#21262d',
+    info: 'GCC/USDC liquidity pool. Receives LP from ImpactCatalyst.' },
+  { id: 'unlocker',      label: 'Glow\nUnlocker',         x: 260,  y: 160, w: 120, h: 48, cat: 'contract', color: '#21262d',
+    info: 'Vests 96M GLOW to early participants over time.' },
+
+  // External actors
+  { id: 'user',          label: 'User',                   x: 960,  y: 120, w: 90,  h: 44, cat: 'actor', color: '#30363d',
+    info: 'End user: buys GLOW, commits GCC, votes on governance proposals.' },
+  { id: 'farms',         label: 'Solar\nFarms',           x: 620,  y: 120, w: 110, h: 52, cat: 'actor', color: '#30363d',
+    info: 'Solar energy producers. Submit weekly production reports via GCAs. Earn GLOW, GCC, and USDC rewards.' },
+  { id: 'gcas',          label: 'GCA\nAgents',            x: 620,  y: 260, w: 110, h: 52, cat: 'actor', color: '#30363d',
+    info: 'Glow Certification Agents (max 5). Validate farm reports, submit weekly buckets. Earn 10k GLOW/week.' },
+];
+
+const edges = [
+  // GLOW inflation flows
+  { from: 'glow_mint', to: 'miner_pool',  token: 'glow', label: '175k/wk',   info: '175,000 GLOW per week minted to the Miner Pool for farm rewards.' },
+  { from: 'glow_mint', to: 'veto',        token: 'glow', label: '5k/wk',     info: '5,000 GLOW per week to Veto Council salary pool.' },
+  { from: 'glow_mint', to: 'grants',      token: 'glow', label: '40k/wk',    info: '40,000 GLOW per week to Grants Treasury.' },
+  { from: 'glow_mint', to: 'early_liq',   token: 'glow', label: '12M init',  info: '12M GLOW pre-minted to EarlyLiquidity bonding curve.' },
+  { from: 'unlocker',  to: 'glow_mint',   token: 'glow', label: '96M vest',  info: '96M GLOW vested via GlowUnlocker to early participants.' },
+
+  // Early liquidity
+  { from: 'user',      to: 'early_liq',   token: 'usdc', label: 'buy',       info: 'Users pay USDC on a bonding curve to receive GLOW.' },
+  { from: 'early_liq', to: 'user',        token: 'glow', label: 'GLOW',      info: 'GLOW tokens sold at price = $0.003 × 2^(totalSold/1M).' },
+  { from: 'early_liq', to: 'miner_pool',  token: 'usdc', label: 'donate',    info: 'All USDC from Early Liquidity sales donated to Miner Pool.' },
+
+  // Miner pool distribution
+  { from: 'miner_pool', to: 'farms',      token: 'glow', label: 'rewards',   info: 'GLOW rewards distributed proportionally to farm production.' },
+  { from: 'miner_pool', to: 'safety',     token: 'usdc', label: 'USDC',      info: 'Farm USDC rewards sent through 7-day SafetyDelay.' },
+  { from: 'safety',     to: 'farms',      token: 'usdc', label: 'after 7d',  info: 'Farms claim USDC after 7-day safety delay (extendable by Veto Council).' },
+  { from: 'miner_pool', to: 'gcas',       token: 'glow', label: '10k/wk',    info: '10,000 GLOW/week salary for GCA agents.' },
+
+  // GCC minting & auction
+  { from: 'gcas',       to: 'miner_pool', token: 'gcc',  label: 'reports',   info: 'GCAs submit validated farm reports; triggers GCC minting.' },
+  { from: 'miner_pool', to: 'gcc_auction', token: 'gcc', label: 'mint',      info: 'GCC minted to descending price auction after bucket finalization.' },
+  { from: 'gcc_auction', to: 'user',      token: 'gcc',  label: 'buy',       info: 'Users buy GCC at auction. Price decays with 1-week half-life.' },
+  { from: 'user',       to: 'gcc_auction', token: 'glow', label: 'pay→burn', info: 'GLOW spent at auction is burned permanently.' },
+
+  // GCC commitment flow
+  { from: 'user',       to: 'impact',     token: 'gcc',  label: 'commit',    info: 'Users commit GCC → swapped for USDC → added to LP → earns Nominations.' },
+  { from: 'impact',     to: 'univ2',      token: 'gcc',  label: 'LP',        info: 'GCC added to Uniswap V2 GCC/USDC liquidity pool.' },
+  { from: 'impact',     to: 'univ2',      token: 'usdc', label: 'LP',        info: 'USDC added to Uniswap V2 GCC/USDC liquidity pool.' },
+  { from: 'impact',     to: 'governance',  token: 'nominations', label: '√(gcc×usdc)', info: 'Nominations = √(gcc_committed × usdc_received). Used for proposals & voting.' },
+
+  // Governance
+  { from: 'governance', to: 'grants',     token: 'glow',  label: 'allocate',  info: 'Governance proposals allocate GLOW from Grants Treasury.' },
+  { from: 'grants',     to: 'user',       token: 'glow',  label: 'claim',     info: 'Grant recipients claim allocated GLOW.' },
+
+  // Veto oversight
+  { from: 'veto',       to: 'safety',     token: 'usdc',  label: 'delay +90d', info: 'Veto Council can extend SafetyDelay by 90 days (5-week cooldown).' },
+
+  // USDG
+  { from: 'user',       to: 'usdg_token', token: 'usdc',  label: 'wrap',      info: 'Users wrap USDC 1:1 into USDG during guarded launch.' },
+
+  // GCC to farms
+  { from: 'miner_pool', to: 'farms',      token: 'gcc',   label: 'GCC',       info: 'GCC minted to farms proportional to CO₂ offset production.' },
+
+  // GLOW staking for governance
+  { from: 'user',       to: 'governance',  token: 'glow',  label: 'stake',     info: 'Users stake GLOW to gain voting power. 5-year cooldown on unstake.' },
+];
+
+// ─── Rendering ──────────────────────────────────────────────────────────────
+
+const svg = document.getElementById('canvas');
+const NS  = 'http://www.w3.org/2000/svg';
+const tooltip = document.getElementById('tooltip');
+
+let zoom = 1, panX = 0, panY = 60;
+let activeFilter = 'all';
+
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+function tokenColor(t) { return COLORS[t] || '#8b949e'; }
+
+// Arrow markers
+function ensureMarker(token) {
+  const id = 'arrow-' + token;
+  if (svg.querySelector('#' + id)) return id;
+  const defs = svg.querySelector('defs') || el('defs', {}, svg);
+  const m = el('marker', { id, markerWidth: 8, markerHeight: 6, refX: 8, refY: 3, orient: 'auto' }, defs);
+  el('path', { d: 'M0,0 L8,3 L0,6 Z', fill: tokenColor(token) }, m);
+  return id;
+}
+
+// Curved edge path between two nodes
+function edgePath(e) {
+  const a = nodes.find(n => n.id === e.from);
+  const b = nodes.find(n => n.id === e.to);
+  const ax = a.x + a.w / 2, ay = a.y + a.h / 2;
+  const bx = b.x + b.w / 2, by = b.y + b.h / 2;
+
+  // offset for parallel edges
+  const dx = bx - ax, dy = by - ay;
+  const len = Math.sqrt(dx * dx + dy * dy) || 1;
+  const nx = -dy / len, ny = dx / len;
+
+  // find sibling edges
+  const siblings = edges.filter(s =>
+    (s.from === e.from && s.to === e.to) || (s.from === e.to && s.to === e.from)
+  );
+  const idx = siblings.indexOf(e);
+  const off = (idx - (siblings.length - 1) / 2) * 18;
+
+  const mx = (ax + bx) / 2 + nx * (30 + off);
+  const my = (ay + by) / 2 + ny * (30 + off);
+
+  return { path: `M${ax},${ay} Q${mx},${my} ${bx},${by}`, mx, my };
+}
+
+function render() {
+  // Clear
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  const defs = el('defs', {}, svg);
+
+  // Drop shadow filter
+  const filter = el('filter', { id: 'shadow', x: '-20%', y: '-20%', width: '140%', height: '140%' }, defs);
+  el('feDropShadow', { dx: 0, dy: 2, stdDeviation: 4, 'flood-color': '#000', 'flood-opacity': 0.4 }, filter);
+
+  // Glow filter for active edges
+  const glow = el('filter', { id: 'glow', x: '-50%', y: '-50%', width: '200%', height: '200%' }, defs);
+  el('feGaussianBlur', { stdDeviation: 3, result: 'blur' }, glow);
+  const merge = el('feMerge', {}, glow);
+  el('feMergeNode', { in: 'blur' }, merge);
+  el('feMergeNode', { in: 'SourceGraphic' }, merge);
+
+  const g = el('g', { transform: `translate(${panX},${panY}) scale(${zoom})` }, svg);
+
+  // Edges
+  const edgeGroup = el('g', {}, g);
+  edges.forEach(e => {
+    const visible = activeFilter === 'all' || e.token === activeFilter;
+    const markerId = ensureMarker(e.token);
+    const { path, mx, my } = edgePath(e);
+    const opacity = visible ? 0.8 : 0.08;
+
+    const p = el('path', {
+      d: path, fill: 'none', stroke: tokenColor(e.token),
+      'stroke-width': 2, 'stroke-opacity': opacity,
+      'marker-end': `url(#${markerId})`,
+      'stroke-dasharray': e.token === 'nominations' ? '6,3' : 'none',
+    }, edgeGroup);
+
+    if (visible) {
+      p.style.filter = 'url(#glow)';
+      p.style.cursor = 'pointer';
+
+      // Animated particles
+      const circle = el('circle', { r: 3, fill: tokenColor(e.token), opacity: 0.9 }, edgeGroup);
+      const anim = el('animateMotion', {
+        dur: (2 + Math.random() * 2) + 's',
+        repeatCount: 'indefinite',
+        path: path,
+      }, circle);
+    }
+
+    // Edge label
+    if (visible) {
+      el('text', {
+        x: mx, y: my - 8,
+        'text-anchor': 'middle', 'font-size': 10,
+        fill: tokenColor(e.token), 'font-weight': 600,
+        'paint-order': 'stroke', stroke: '#0d1117', 'stroke-width': 3,
+      }, edgeGroup).textContent = e.label;
+    }
+
+    // Hover target (wider invisible path)
+    const hit = el('path', {
+      d: path, fill: 'none', stroke: 'transparent', 'stroke-width': 14,
+    }, edgeGroup);
+    hit.style.cursor = 'pointer';
+    hit.addEventListener('mouseenter', ev => showTooltip(ev, `<h3>${e.label}</h3><span class="tt-token" style="background:${tokenColor(e.token)}33;color:${tokenColor(e.token)}">${e.token.toUpperCase()}</span><br><br>${e.info}`));
+    hit.addEventListener('mouseleave', hideTooltip);
+    hit.addEventListener('mousemove', moveTooltip);
+  });
+
+  // Nodes
+  const nodeGroup = el('g', {}, g);
+  nodes.forEach(n => {
+    const ng = el('g', { transform: `translate(${n.x},${n.y})` }, nodeGroup);
+
+    const dimmed = activeFilter !== 'all' && !edges.some(e =>
+      (e.token === activeFilter) && (e.from === n.id || e.to === n.id)
+    );
+
+    const r = 8;
+    const borderColor = n.cat === 'token' ? n.color : '#30363d';
+    const fillColor = n.cat === 'token' ? n.color + '18' : '#161b22';
+
+    el('rect', {
+      x: 0, y: 0, width: n.w, height: n.h, rx: r, ry: r,
+      fill: fillColor, stroke: borderColor, 'stroke-width': n.cat === 'token' ? 2 : 1.5,
+      opacity: dimmed ? 0.15 : 1,
+      filter: dimmed ? 'none' : 'url(#shadow)',
+    }, ng);
+
+    const lines = n.label.split('\n');
+    lines.forEach((line, i) => {
+      el('text', {
+        x: n.w / 2, y: n.h / 2 + (i - (lines.length - 1) / 2) * 15 + 5,
+        'text-anchor': 'middle', 'font-size': 12, 'font-weight': 600,
+        fill: dimmed ? '#484f58' : (n.cat === 'token' ? n.color : '#c9d1d9'),
+      }, ng).textContent = line;
+    });
+
+    // Category badge
+    if (!dimmed && n.cat === 'actor') {
+      el('circle', {
+        cx: n.w - 4, cy: 4, r: 4,
+        fill: '#3fb950', opacity: 0.8,
+      }, ng);
+    }
+
+    ng.style.cursor = 'pointer';
+    ng.addEventListener('mouseenter', ev => showTooltip(ev, `<h3>${n.label.replace('\n', ' ')}</h3><span style="color:${n.cat === 'token' ? n.color : '#8b949e'};font-size:11px">${n.cat.toUpperCase()}</span><br><br>${n.info}`));
+    ng.addEventListener('mouseleave', hideTooltip);
+    ng.addEventListener('mousemove', moveTooltip);
+  });
+}
+
+// ─── Tooltip ────────────────────────────────────────────────────────────────
+
+function showTooltip(ev, html) {
+  tooltip.innerHTML = html;
+  tooltip.classList.add('visible');
+  moveTooltip(ev);
+}
+function hideTooltip() { tooltip.classList.remove('visible'); }
+function moveTooltip(ev) {
+  let x = ev.clientX + 14, y = ev.clientY + 14;
+  if (x + 320 > window.innerWidth) x = ev.clientX - 330;
+  if (y + 200 > window.innerHeight) y = ev.clientY - 200;
+  tooltip.style.left = x + 'px';
+  tooltip.style.top = y + 'px';
+}
+
+// ─── Pan & Zoom ─────────────────────────────────────────────────────────────
+
+let dragging = false, lastX, lastY;
+svg.addEventListener('mousedown', e => {
+  if (e.target.closest('g')) { /* allow node interactions */ }
+  dragging = true; lastX = e.clientX; lastY = e.clientY;
+});
+window.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  panX += e.clientX - lastX;
+  panY += e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  render();
+});
+window.addEventListener('mouseup', () => dragging = false);
+
+svg.addEventListener('wheel', e => {
+  e.preventDefault();
+  const scale = e.deltaY > 0 ? 0.92 : 1.08;
+  const rect = svg.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  panX = mx - (mx - panX) * scale;
+  panY = my - (my - panY) * scale;
+  zoom *= scale;
+  zoom = Math.max(0.3, Math.min(3, zoom));
+  render();
+}, { passive: false });
+
+// ─── Filters ────────────────────────────────────────────────────────────────
+
+document.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    activeFilter = btn.dataset.filter;
+    render();
+  });
+});
+
+// ─── Init ───────────────────────────────────────────────────────────────────
+
+render();
+</script>
+</body>
+</html>
